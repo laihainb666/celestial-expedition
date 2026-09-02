@@ -30,8 +30,69 @@ import resource
 import sys
 import time
 
-VERSION = "3.0.0"
+VERSION = "3.1.0"
 SAVE_FILE = "starfall_save.json"
+
+
+# ============================================================
+# 品质系统（v3.1）
+# 根据物品 id 稳定推导品质，无需改动数据表：
+#   普通(40%) < 优秀(25%) < 精良(18%) < 史诗(12%) < 传说(5%)
+# 品质影响装备属性加成与名字词缀。
+# ============================================================
+QUALITY_LEVELS = [
+    ("普通", 1.00, ""),
+    ("优秀", 1.15, "精良"),
+    ("精良", 1.30, "闪耀"),
+    ("史诗", 1.50, "史诗"),
+    ("传说", 1.80, "传说"),
+]
+
+
+def item_quality(item_id):
+    """根据物品 id 稳定推导品质等级（0-4）"""
+    if not item_id:
+        return 0
+    import hashlib
+    h = int(hashlib.md5(str(item_id).encode("utf-8")).hexdigest(), 16)
+    r = h % 100
+    if r < 40:
+        return 0
+    if r < 65:
+        return 1
+    if r < 83:
+        return 2
+    if r < 95:
+        return 3
+    return 4
+
+
+def quality_bonus(item_id):
+    """品质属性加成系数"""
+    return QUALITY_LEVELS[item_quality(item_id)][1]
+
+
+def quality_word(item_id):
+    """品质名字词缀"""
+    return QUALITY_LEVELS[item_quality(item_id)][2]
+
+
+def quality_tag(item_id):
+    """品质标签（中文名）"""
+    return QUALITY_LEVELS[item_quality(item_id)][0]
+
+
+def display_name(item_id):
+    """带品质词缀的显示名；非装备直接返回原名"""
+    if not item_id:
+        return ""
+    it = ITEM_MAP.get(item_id)
+    if not it:
+        return str(item_id)
+    if it.get("type") in ("weapon", "armor", "accessory"):
+        w = quality_word(item_id)
+        return (w + "·" + it["name"]) if w else it["name"]
+    return it["name"]
 
 
 # ============================================================
@@ -202,37 +263,54 @@ class Player:
         self.seen_monsters = set()
         self.seen_items = set()
         self.seen_zones = set()
+        # 强化等级记录 {item_id: level}（v3.1）
+        self.enhance = {}
 
-    # ---- 属性计算 ----
+    # ---- 属性计算（v3.1 修复：按 id 查表 + 品质加成 + 强化加成） ----
     def atk(self):
-        v = self.base_atk + (self.weapon["atk"] if self.weapon else 0)
-        if self.accessory and self.accessory.get("atk"):
-            v += self.accessory["atk"]
-        return v
+        v = self.base_atk
+        if self.weapon:
+            it = ITEM_MAP.get(self.weapon) or {}
+            v += it.get("atk", 0) * quality_bonus(self.weapon)
+            v += self.enhance.get(self.weapon, 0)
+        if self.accessory:
+            it = ITEM_MAP.get(self.accessory) or {}
+            v += it.get("atk", 0) * quality_bonus(self.accessory)
+        return int(v)
 
     def defense(self):
-        v = self.base_def + (self.armor["def"] if self.armor else 0)
-        if self.accessory and self.accessory.get("def"):
-            v += self.accessory["def"]
-        return v
+        v = self.base_def
+        if self.armor:
+            it = ITEM_MAP.get(self.armor) or {}
+            v += it.get("def", 0) * quality_bonus(self.armor)
+        if self.accessory:
+            it = ITEM_MAP.get(self.accessory) or {}
+            v += it.get("def", 0) * quality_bonus(self.accessory)
+        return int(v)
 
     def max_hp_full(self):
         v = self.max_hp
-        if self.accessory and self.accessory.get("hp"):
-            v += self.accessory["hp"]
-        return v
+        if self.armor:
+            it = ITEM_MAP.get(self.armor) or {}
+            v += it.get("hp", 0) * quality_bonus(self.armor)
+        if self.accessory:
+            it = ITEM_MAP.get(self.accessory) or {}
+            v += it.get("hp", 0) * quality_bonus(self.accessory)
+        return int(v)
 
     def crit_rate(self):
         v = self.crit
-        if self.accessory and self.accessory.get("crit"):
-            v += self.accessory["crit"]
+        if self.accessory:
+            it = ITEM_MAP.get(self.accessory) or {}
+            v += it.get("crit", 0) * quality_bonus(self.accessory)
         return min(0.8, v)
 
     def agi_full(self):
         v = self.agi
-        if self.accessory and self.accessory.get("agi"):
-            v += self.accessory["agi"]
-        return v
+        if self.accessory:
+            it = ITEM_MAP.get(self.accessory) or {}
+            v += it.get("agi", 0) * quality_bonus(self.accessory)
+        return int(v)
 
     def exp_needed(self):
         return 50 + (self.level - 1) * 60
@@ -471,12 +549,12 @@ class Game:
         elif roll < 0.8:
             iid = random.choice(["p1", "p2", "p3", "m1", "m2", "m5"])
             self.add_item(iid)
-            print(f"  🎁 发现宝箱！获得 {ITEM_MAP[iid]['name']}")
+            print(f"  🎁 发现宝箱！获得 {display_name(iid)}")
         else:
             eq = [iid for iid in ITEM_MAP if ITEM_MAP[iid]["type"] in ("weapon", "armor", "accessory")]
             iid = random.choice(eq)
             self.add_item(iid)
-            print(f"  🎁 发现稀有宝箱！获得装备 {ITEM_MAP[iid]['name']}")
+            print(f"  🎁 发现稀有宝箱！获得装备 {display_name(iid)}")
         self.check_achieve("gold", 1000)
         self.check_achieve("gold", 5000)
 
@@ -492,7 +570,7 @@ class Game:
         print("    他微笑着递给你一份小礼物。")
         iid = random.choice(["p1", "p2", "m2", "m8"])
         self.add_item(iid)
-        print(f"    获得 {ITEM_MAP[iid]['name']} x1")
+        print(f"    获得 {display_name(iid)} x1")
 
     def npc_event(self):
         npc = random.choice(NPCS)
@@ -787,7 +865,7 @@ class Game:
     def grant_reward(self, ri):
         if ri in ITEM_MAP:
             self.add_item(ri)
-            print(f"    奖励物品：{ITEM_MAP[ri]['name']}")
+            print(f"    奖励物品：{display_name(ri)}")
         elif str(ri).startswith("ac") and ri not in self.p.achievements:
             self.p.achievements.append(ri)
             a = next((x for x in ACHIEVEMENTS if x["id"] == ri), None)
@@ -800,13 +878,13 @@ class Game:
         if roll < 0.35:
             iid = random.choice(["p1", "p2", "m1"])
             self.add_item(iid)
-            print(f"  掉落：{ITEM_MAP[iid]['name']} x1")
+            print(f"  掉落：{display_name(iid)} x1")
         elif roll < 0.55:
             pool = [x for x in zone["shop"] if ITEM_MAP[x]["type"] in ("weapon", "armor", "accessory")]
             if pool:
                 iid = random.choice(pool)
                 self.add_item(iid)
-                print(f"  掉落装备：{ITEM_MAP[iid]['name']} x1")
+                print(f"  掉落装备：{display_name(iid)} x1")
                 self.check_achieve("equip", 10)
 
     def handle_death(self):
@@ -861,7 +939,7 @@ class Game:
             iid = items[int(c)]
             self.remove_item(iid)
             self.p.gold += ITEM_MAP[iid]["price"] // 2
-            print(f"  出售 {ITEM_MAP[iid]['name']}，获得 {ITEM_MAP[iid]['price'] // 2} 金币。")
+            print(f"  出售 {display_name(iid)}，获得 {ITEM_MAP[iid]['price'] // 2} 金币。")
 
     # ---------- 背包 / 装备 ----------
     def inventory_menu(self):
@@ -882,24 +960,49 @@ class Game:
                     extra += f" 暴击+{int(it['crit']*100)}%"
                 if it.get("agi"):
                     extra += f" 敏捷+{it['agi']}"
-                print(f"    {it['name']} x{n}{extra}  [{it['type']}]")
+                print(f"    {q}{display_name(iid)} x{n}{extra}  [{it['type']}]  <{iid}>")
         print("\n-- 装备栏 --")
-        w = ITEM_MAP[self.p.weapon]["name"] if self.p.weapon else "无"
-        ar = ITEM_MAP[self.p.armor]["name"] if self.p.armor else "无"
-        ac = ITEM_MAP[self.p.accessory]["name"] if self.p.accessory else "无"
+        w = display_name(self.p.weapon) if self.p.weapon else "无"
+        ar = display_name(self.p.armor) if self.p.armor else "无"
+        ac = display_name(self.p.accessory) if self.p.accessory else "无"
         print(f"  武器: {w}   护甲: {ar}   饰品: {ac}")
-        print("  输入装备物品 id 以穿戴（如 w1），q 返回：")
+        print("  输入装备 id 或名字以穿戴（如输入 烈焰 或 w_烈焰_铁剑_之刃），q 返回：")
         c = input("  > ").strip().lower()
         if c == "q":
             return
-        if c in ITEM_MAP and self.item_count(c) > 0 and ITEM_MAP[c]["type"] in ("weapon", "armor", "accessory"):
-            slot = {"weapon": "weapon", "armor": "armor", "accessory": "accessory"}[ITEM_MAP[c]["type"]]
+        # 匹配：先精确 id，再精确名字，再模糊名字
+        target = None
+        if c in ITEM_MAP and self.item_count(c) > 0:
+            target = c
+        else:
+            cands = [iid for iid in self.p.inventory
+                     if ITEM_MAP[iid]["type"] in ("weapon", "armor", "accessory")
+                     and self.item_count(iid) > 0
+                     and (c in ITEM_MAP[iid]["name"].lower() or c in iid.lower())]
+            if len(cands) == 1:
+                target = cands[0]
+            elif len(cands) > 1:
+                print("  匹配到多个装备，请选择编号：")
+                for i, iid in enumerate(cands, 1):
+                    it = ITEM_MAP[iid]
+                    print(f"    {i}. [{quality_tag(iid)}] {display_name(iid)} ({it['type']}) <{iid}>")
+                try:
+                    sel = int(input("  > ").strip())
+                    if 1 <= sel <= len(cands):
+                        target = cands[sel - 1]
+                except ValueError:
+                    pass
+            else:
+                print("  未找到可装备的物品（输入 id 或名字的一部分）。")
+        if target:
+            it = ITEM_MAP[target]
+            slot = {"weapon": "weapon", "armor": "armor", "accessory": "accessory"}[it["type"]]
             old = getattr(self.p, slot)
             if old:
                 self.add_item(old)
-            setattr(self.p, slot, c)
-            self.remove_item(c)
-            print(f"  已装备 {ITEM_MAP[c]['name']}！")
+            setattr(self.p, slot, target)
+            self.remove_item(target)
+            print(f"  已装备 {display_name(target)}（{quality_tag(target)}品质）！")
             self.check_achieve("equip", 10)
         else:
             print("  无法装备该物品。")
@@ -949,7 +1052,7 @@ class Game:
             need.append((iid, int(num) if num else 1))
         for iid, n in need:
             if self.item_count(iid) < n:
-                print(f"  材料不足：{ITEM_MAP[iid]['name']} 需要 x{n}（当前 x{self.item_count(iid)}）")
+                print(f"  材料不足：{display_name(iid)} 需要 x{n}（当前 x{self.item_count(iid)}）")
                 return
         for iid, n in need:
             self.remove_item(iid, n)
@@ -979,7 +1082,7 @@ class Game:
             return
         self.p.gold -= cost
         self.p.enhance[self.p.weapon] = level + 1
-        print(f"  强化成功！{it['name']} +{level+1}（攻击 +{level+1}）")
+        print(f"  强化成功！{display_name(self.p.weapon)} +{level+1}（攻击 +{level+1}）")
 
     # ---------- 任务 ----------
     def quest_menu(self):
@@ -1128,7 +1231,7 @@ class Game:
 
     def debug_give_item(self):
         """调试：随机赠送一件装备"""
-        pool = [iid for iid, it in ITEM_MAP.items() if it["type"] in ("weapon", "armor", "trinket")]
+        pool = [iid for iid, it in ITEM_MAP.items() if it["type"] in ("weapon", "armor", "accessory")]
         iid = random.choice(pool)
         self.add_item(iid, 1)
         it = ITEM_MAP[iid]
@@ -1215,7 +1318,7 @@ class Game:
         for i in range(1, 11):
             _add("等级", f"set_level_{i}", f"直接升到 {i} 级", (lambda n: (lambda: self._dbg_level(n)))(i))
         # D. 装备（51-60）
-        for i, t in enumerate(["weapon", "armor", "trinket", "weapon", "armor", "trinket", "weapon", "armor", "trinket", "weapon"], 1):
+        for i, t in enumerate(["weapon", "armor", "accessory", "weapon", "armor", "accessory", "weapon", "armor", "accessory", "weapon"], 1):
             _add("装备", f"give_{t}_{i}", f"赠送随机{t}装备", (lambda x: (lambda: self._dbg_item(x)))(t))
         # E. 召唤怪物（61-70）
         for i in range(1, 11):
@@ -1305,10 +1408,10 @@ class Game:
     def _dbg_item(self, itype):
         pool = [iid for iid, it in ITEM_MAP.items() if it["type"] == itype]
         if not pool:
-            pool = [iid for iid, it in ITEM_MAP.items() if it["type"] in ("weapon", "armor", "trinket")]
+            pool = [iid for iid, it in ITEM_MAP.items() if it["type"] in ("weapon", "armor", "accessory")]
         iid = random.choice(pool)
         self.add_item(iid, 1)
-        print(f"  获得：{ITEM_MAP[iid]['name']}（{ITEM_MAP[iid]['desc']}）")
+        print(f"  获得：{display_name(iid)}（{ITEM_MAP[iid]['desc']}）")
 
     def _dbg_summon(self, zi):
         zi = max(0, min(len(ZONES) - 1, zi))
@@ -1493,7 +1596,7 @@ class Game:
 
     def codex_items(self, mode):
         if mode == "equipment":
-            types = ["weapon", "armor", "trinket"]
+            types = ["weapon", "armor", "accessory"]
             title = "装备图鉴"
         else:
             types = ["potion", "material", "food"]
@@ -1543,10 +1646,10 @@ class Game:
             self.p.stats["gold_earned"] = self.p.stats.get("gold_earned", 0) + gold
             print(f"  【实验】时空裂缝中掉出金币！+{gold} 金币（真实入账）")
         elif roll < 0.8:
-            pool = [iid for iid, it in ITEM_MAP.items() if it["type"] in ("weapon", "armor", "trinket", "potion")]
+            pool = [iid for iid, it in ITEM_MAP.items() if it["type"] in ("weapon", "armor", "accessory", "potion")]
             iid = random.choice(pool)
             self.add_item(iid, 1)
-            print(f"  【实验】量子波动送来 {ITEM_MAP[iid]['name']}！已真实加入背包")
+            print(f"  【实验】量子波动送来 {display_name(iid)}！已真实加入背包")
         else:
             exp = random.randint(100, 400)
             self.p.add_exp(exp)
@@ -1634,9 +1737,9 @@ class Game:
         elif kind == "item":
             names = ["碎星之刃", "虚空法袍", "极光护腕", "永夜戒指", "晨曦项链"]
             iid = "ai_item_%d" % len(ITEM_MAP)
-            ITEM_MAP[iid] = {"name": random.choice(names), "type": random.choice(["weapon", "armor", "trinket"]),
+            ITEM_MAP[iid] = {"name": random.choice(names), "type": random.choice(["weapon", "armor", "accessory"]),
                              "desc": "AI 生成的神秘装备"}
-            print(f"  [AI-本地] 新装备 {ITEM_MAP[iid]['name']} 已加入图鉴")
+            print(f"  [AI-本地] 新装备 {display_name(iid)} 已加入图鉴")
         elif kind == "event":
             texts = ["一阵奇异的风吹过，你感觉时间变慢了……",
                      "空中飘落一枚发光的晶石，蕴含着未知的力量。",
@@ -1791,5 +1894,5 @@ if __name__ == "__main__":
 # v2.3   —— 新增设置/调试系统（主菜单 S）、战斗统计，测试 50/50 全绿
 # v3.0   —— 新增九职业/调试命令台/模组系统/实验模式/AI 游玩/六类图鉴，
 #           测试 59/59 全绿，内存实测 23MB（分模块版）
-# 当前版本：v3.0.0
+# 当前版本：v3.1.0
 # ============================================================
