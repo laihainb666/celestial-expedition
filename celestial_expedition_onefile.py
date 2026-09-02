@@ -30,7 +30,7 @@ import resource
 import sys
 import time
 
-VERSION = "3.1.0"
+VERSION = "4.0.0"
 SAVE_FILE = "starfall_save.json"
 
 
