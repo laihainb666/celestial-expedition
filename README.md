@@ -8,7 +8,7 @@
 python3 celestial_expedition.py          # 分模块版（主程序 + 数据模块）
 python3 celestial_expedition_onefile.py  # 单文件版（约 2.8MB，可直接分发）
 python3 ai_play.py                       # AI 自动游玩脚本
-python3 ai_play_v4.py --load starfall_save_v4.json   # 读取 V4 附赠存档体验满级角色
+python3 ai_play_v4.py --load --save starfall_save_v4.json   # 读取 V4 附赠存档体验满级角色
 ```
 
 ## 数据规模（v4.0.0）
@@ -141,7 +141,7 @@ V4 版本修复交互用药卡死问题，血量告急时自动选药水恢复�
 - 想快速体验后期内容？设置菜单开「一击必杀」+「无敌模式」即可无双刷怪
 - 想体验模组？把 mods/ 目录放进游戏根目录后启动游戏
 - 想挂机？直接 `python3 ai_play.py --rounds 50`
-- 想体验 V4 实测角色？`python3 ai_play_v4.py --load starfall_save_v4.json`
+- 想体验 V4 实测角色？`python3 ai_play_v4.py --load --save starfall_save_v4.json`
 
 ## 版本历史
 
