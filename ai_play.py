@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 """
-《苍穹远征：星陨传说》v3.0 AI 自动游玩脚本
+《苍穹远征：星陨传说》v4.0 AI 自动游玩脚本（修复自动用药交互卡死）
 ================================================
 一句话用法：
     python3 ai_play.py                    # AI 自动游玩 50 回合
@@ -50,13 +50,25 @@ class AIPlayer:
         self.logs.append(text)
 
     # ---------- AI 决策 ----------
+    def auto_use_potion(self):
+        """自动用药：选择第一个治疗药水（不触发交互 input）"""
+        p = self.g.p
+        for iid, n in list(p.potions.items()):
+            if n > 0:
+                it = ce.ITEM_MAP.get(iid)
+                if it and it.get("heal"):
+                    p.potions[iid] -= 1
+                    p.hp = min(p.max_hp_full(), p.hp + it["heal"])
+                    return True
+        return False
+
     def decide(self, rnd):
         p = self.g.p
         zone = self.g.get_zone()
         # 1. 血量危险 -> 用药/休息
         if p.hp < p.max_hp_full() * 0.35:
-            if self.g.use_potion():
-                self.log(f"  [AI] 回合{rnd}：血量告急，使用药水恢复 HP {p.hp}")
+            if self.auto_use_potion():
+                self.log(f"  [AI] 回合{rnd}：血量告急，自动使用药水恢复 HP {p.hp}")
             else:
                 self.g._dbg_full()
                 self.log(f"  [AI] 回合{rnd}：无药水，原地休整回满")
@@ -140,7 +152,7 @@ class AIPlayer:
 
 
 def main():
-    ap = argparse.ArgumentParser(description="苍穹远征 v3.0 AI 自动游玩")
+    ap = argparse.ArgumentParser(description="苍穹远征 v4.0 AI 自动游玩")
     ap.add_argument("--rounds", type=int, default=50, help="游玩回合数（默认 50）")
     ap.add_argument("--load", action="store_true", help="读取现有存档继续游玩")
     ap.add_argument("--save", default="starfall_save.json", help="存档文件名")
