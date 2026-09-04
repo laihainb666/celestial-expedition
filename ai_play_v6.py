@@ -184,8 +184,8 @@ class AIPlayer:
             return "advance"
         if p.hp < p.max_hp_full() * 0.60:
             return "rest"
-        # boss 仅在能轻松碾压当前区时挑战，避免频繁阵亡回城
-        if r % 29 == 0 and p.hp >= p.max_hp_full() * 0.95 and p.level >= self.g.get_zone().get("level", 0) + 8:
+        # V6.1 boss 攻坚放宽：等级接近区域即挑战，打不过会安全跳过练级再战
+        if r % 19 == 0 and p.hp >= p.max_hp_full() * 0.88 and p.level >= self.g.get_zone().get("level", 0) - 2:
             return "boss"
         if r % 41 == 0:
             return "advance"
@@ -258,7 +258,12 @@ class AIPlayer:
     def _fight_safe(self, enemy):
         """调用自动战斗并统计，返回胜负"""
         p = self.g.p
+        # V6.1 安全评估（AI 不送死）：低血硬仗 / 打不动 / 承伤扛不住 → None（稍后再战）
         if p.hp < p.max_hp_full() * 0.45 and enemy.get("hp", 0) > p.hp * 1.2:
+            return None
+        if enemy.get("def", 0) > p.atk() * 1.5:
+            return None
+        if enemy.get("atk", 0) > max(p.defense() * 1.5, 1) and enemy.get("hp", 0) > p.max_hp_full() * 1.8:
             return None
         try:
             e = ce.Enemy(dict(enemy))
@@ -421,6 +426,9 @@ class AIPlayer:
         if ok:
             self.log(f"  [AI] 讨伐成功！{target['name']}")
             self.stuck_counter = 0
+        elif ok is None:
+            # V6.1：评估认为打不过（安全跳过），不封禁区域，练级后再来
+            self.log(f"  [AI] 暂避 BOSS {target['name']}，练级后再战")
         else:
             # 失败 -> 冷却：标记该区暂缓，练级后重来
             self._zone_blacklist.add(p.zone)
@@ -765,6 +773,7 @@ class AIPlayer:
     # ================= 主循环 =================
 
     def run(self):
+        ce._AUTO_POTION = True   # V6.1：全自动战斗用药不再等待 stdin
         p = self.g.p
         if self.fast:
             self.g.fast_mode = True
