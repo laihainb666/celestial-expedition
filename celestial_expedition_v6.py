@@ -30,13 +30,16 @@ import resource
 import sys
 import time
 
-VERSION = "6.0.0"
+VERSION = "6.1.0"
 SAVE_FILE = "starfall_save_v6.json"
 
 
 # ============================================================
 # V6 高速引擎静音开关：fast_mode 下抑制升级/成就/掉落打印
 _FAST_QUIET = False
+_AUTO_POTION = False      # AI 全自动战斗时 use_potion 直接自动择优，不弹输入菜单
+DIFFICULTY_LEVELS = {'休闲': 0.7, '普通': 1.0, '困难': 1.35, '噩梦': 1.8}   # 怪物 HP/攻防倍率
+DIFFICULTY_EXP = {'休闲': 0.85, '普通': 1.0, '困难': 1.12, '噩梦': 1.3}    # 经验奖励倍率
 
 # 品质系统（v3.1）
 # 根据物品 id 稳定推导品质，无需改动数据表：
@@ -123,7 +126,7 @@ def show_boot_info():
     else:
         print("  内存占用未达 800KB 阈值")
     print("-" * 62)
-    print("  V6.0 新增：技能库 400+ / 调试台增强(查ID·ID取物) / 高速AI引擎 / 四大DLC")
+    print("  V6.1 新增：难度系统(休闲~噩梦) / 后期区域怪物增强 / AI 药水自动择优 / BOSS 智能挑战")
     print("           六类图鉴 / 模组系统 / 实验模式 / AI内容生成")
     print("-" * 62)
 
@@ -402,6 +405,7 @@ class Player:
         self.format_hint = ""       # 存档文件来源格式标记（迁移用）
 
         # 设置/调试选项
+        self.difficulty = "普通"   # 难度：休闲/普通/困难/噩梦
         self.god_mode = False     # 无敌模式：战斗中不掉血
         self.one_hit = False      # 一击必杀：秒杀敌人
         self.show_damage = False  # 伤害明细显示
@@ -504,6 +508,9 @@ class Player:
             p.skill_slots = list(range(min(14, len(_sk))))
         if not getattr(p, "skills_cd", None) or len(p.skills_cd) != len(p.skill_slots):
             p.skills_cd = [0] * len(p.skill_slots)
+        p.difficulty = getattr(p, "difficulty", "普通")
+        if p.difficulty not in DIFFICULTY_LEVELS:
+            p.difficulty = "普通"
         p.god_mode = getattr(p, "god_mode", False)
         p.one_hit = getattr(p, "one_hit", False)
         p.show_damage = getattr(p, "show_damage", False)
@@ -568,10 +575,47 @@ class Game:
         self.mods = []
         self.ai_api_key = ""
         self.fast_mode = False   # V6 高速模式：AI 无演出结算（可达万级回合/秒）
+        self.difficulty = getattr(player, "difficulty", "普通")
 
     # ---------- 工具 ----------
     def get_zone(self):
         return ZONES[self.p.zone]
+
+    # ---------- V6.1 难度与后期强化 ----------
+    def _late_mult(self):
+        """后期区域补强：随区域等级分段增强，中后期怪越来越强"""
+        zl = ZONES[self.p.zone].get("level", 0)
+        late = 1.0
+        if zl >= 90:
+            late *= 1.15
+        if zl >= 150:
+            late *= 1.12
+        if zl >= 300:
+            late *= 1.10
+        return late
+
+    def _diff_mult(self, key="monster"):
+        d = getattr(self.p, "difficulty", "普通")
+        if key == "exp":
+            return DIFFICULTY_EXP.get(d, 1.0)
+        return DIFFICULTY_LEVELS.get(d, 1.0)
+
+    def apply_difficulty(self, enemy):
+        """对敌实例施加 难度档位 × 后期强化；同时折算经验/金币奖励"""
+        if enemy is None:
+            return
+        diff = self._diff_mult("monster")
+        late = self._late_mult()
+        m = diff * late
+        if m == 1.0 and diff == 1.0:
+            return
+        enemy.max_hp = max(1, int(enemy.max_hp * m))
+        enemy.hp = enemy.max_hp
+        enemy.atk = max(1, int(enemy.atk * (1 + (m - 1) * 0.85)))
+        enemy.defense = max(0, int(enemy.defense * (1 + (m - 1) * 0.5)))
+        em = self._diff_mult("exp")
+        enemy.exp = max(1, int(enemy.exp * em))
+        enemy.gold = max(0, int(enemy.gold * em))
 
     def item_count(self, item_id):
         return self.p.inventory.get(item_id, 0)
@@ -790,6 +834,7 @@ class Game:
     def _fight(self, enemy):
         """自动战斗（供调试召唤/AI游玩使用）：自动技能/用药，战至终局
         V6：只从『技能位』中选技能，兼容 400+ 技能库。"""
+        self.apply_difficulty(enemy)
         if getattr(self, "fast_mode", False):
             return self._fast_fight(enemy)
         self.p.stats["battle"] = self.p.stats.get("battle", 0) + 1
@@ -877,7 +922,7 @@ class Game:
                     self.handle_death()
                     return False
                 if self.p.hp < self.p.max_hp_full() * 0.4:
-                    if self.use_potion():
+                    if self.use_potion(auto=True):
                         print("  [AI] 自动使用药水恢复！")
                     else:
                         self.p.shield += 15
@@ -1015,6 +1060,7 @@ class Game:
     def encounter_monster(self):
 
         enemy = self.pick_monster()
+        self.apply_difficulty(enemy)
         self.p.stats["battle"] += 1
         print(f"\n  ⚔ 遭遇 {enemy.name}！")
         if enemy.boss:
@@ -1157,20 +1203,32 @@ class Game:
             print(f"  🛡 你施放 {s['name']}，护盾 +{s['buff']}。")
 
 
-    def use_potion(self):
+    def use_potion(self, auto=None):
+        if auto is None:
+            auto = _AUTO_POTION
         options = {iid: ITEM_MAP[iid] for iid in self.p.potions
                    if self.p.potions[iid] > 0}
         if not options:
+            if auto:
+                return False
             print("  没有可用的药水。")
             return False
-        print("  药水：")
-        for i, (iid, it) in enumerate(options.items()):
-            print(f"    {i}. {it['name']} x{self.p.potions[iid]}")
-        c = input("  使用 > ").strip()
-        if not c.isdigit() or int(c) not in range(len(options)):
-            print("  取消。")
-            return False
-        iid = list(options.keys())[int(c)]
+        if auto:
+            # V6.1 AI 自动择优：优先回血最强的治疗药，无治疗选回蓝
+            healers = [(iid, it) for iid, it in options.items() if it.get("heal")]
+            if healers:
+                iid = max(healers, key=lambda x: x[1].get("heal", 0))[0]
+            else:
+                iid = max(options.items(), key=lambda x: x[1].get("mana", 0))[0]
+        else:
+            print("  药水：")
+            for i, (iid, it) in enumerate(options.items()):
+                print(f"    {i}. {it['name']} x{self.p.potions[iid]}")
+            c = input("  使用 > ").strip()
+            if not c.isdigit() or int(c) not in range(len(options)):
+                print("  取消。")
+                return False
+            iid = list(options.keys())[int(c)]
         it = ITEM_MAP[iid]
         self.p.potions[iid] -= 1
         if it.get("heal"):
@@ -1542,6 +1600,7 @@ class Game:
         while True:
             print("\n-- 设置 / 调试 --")
             print("  [常规]")
+            print(f"    D. 难度设置        当前：{getattr(p, 'difficulty', '普通')}（休闲/普通/困难/噩梦）")
             print(f"    1. 无敌模式        {'✔ 开' if p.god_mode else '✘ 关'}")
             print(f"    2. 一击必杀        {'✔ 开' if p.one_hit else '✘ 关'}")
             print(f"    3. 伤害明细        {'✔ 开' if p.show_damage else '✘ 关'}")
@@ -1596,10 +1655,36 @@ class Game:
                 p.one_hit = False
                 p.show_damage = False
                 print("  已恢复默认设置（无敌/一击必杀/伤害明细均关闭）。")
+            elif c == "d":
+                self.difficulty_menu()
             elif c == "q":
                 return
             else:
                 print("  无效指令。")
+
+    def difficulty_menu(self):
+        """V6.1 难度选择：立即生效于后续战斗（含 AI 挂机）"""
+        while True:
+            p = self.p
+            cur = getattr(p, "difficulty", "普通")
+            print("\n-- 难度设置 --")
+            print(f"  当前难度：{cur}（怪物强度 {DIFFICULTY_LEVELS.get(cur, 1.0)}x）")
+            print("  1. 休闲   （0.7x 怪物，经验 0.85x，适合轻松探索）")
+            print("  2. 普通   （1.0x 标准体验）")
+            print("  3. 困难   （1.35x 怪物，经验 1.12x，奖励更丰）")
+            print("  4. 噩梦   （1.8x 怪物，经验 1.3x，挑战极限）")
+            print("  提示：后期区域自带逐段强化（Lv90+/150+/300+），BOSS 会越来越强。")
+            print("  Q. 返回")
+            c = input("  难度 > ").strip().lower()
+            if c == "q":
+                return
+            m = {"1": "休闲", "2": "普通", "3": "困难", "4": "噩梦"}.get(c)
+            if m:
+                p.difficulty = m
+                self.difficulty = m
+                print(f"  难度已切换为：{m}。后续战斗（含 AI 挂机）立即生效。")
+            else:
+                print("  无效选择。")
 
     def debug_give_item(self):
         """调试：随机赠送一件装备"""
